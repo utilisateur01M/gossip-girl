@@ -1,35 +1,86 @@
 'use strict';
 (() => {
   const $ = s => document.querySelector(s);
-  const KEY = 'private-edit-v1';
-  const stories = [
-    ['gossip', 'A table for two. An audience of everyone.', 'Spotted: a familiar face at an unfamiliar table. The reservation was discreet. The entrance? Anything but.', 'At 9:07, the corner table was empty. At 9:12, it became the most interesting real estate in Manhattan.\n\nShe arrived without her usual entourage, wearing an expression that said business and earrings that said otherwise. He was already there. So was half the room’s curiosity.\n\nTwo sparkling waters, one untouched dessert, and a conversation that ended the moment a certain friend walked through the door. Coincidence has always had excellent timing on the Upper East Side.\n\nNo names. For now. But if your dinner needs a cover story, perhaps choose a restaurant without windows.\n\nxoxo, Gossip Girl', true],
-    ['style', 'The dress code? Quietly unforgettable.', 'A borrowed jacket. A vintage ribbon. And absolutely nothing to prove. This week, the best-dressed guest ignored the invitation.', 'Some girls arrive wearing the entire season. Others arrive wearing a story.\n\nLast night’s most discussed look involved a black satin slip, an oversized dinner jacket, and a ribbon that might have come from a grandmother’s jewellery drawer. No visible label. No explanation.\n\nThe secret was in the proportions: something soft, something structured, and shoes made for leaving early.\n\nConsider this your permission to repeat an outfit. Just never repeat an entrance.\n\nxoxo, Gossip Girl', false],
-    ['society', 'An invitation is not an alibi.', 'Champagne on the terrace. A missing place card. Someone’s name was on the list—until it wasn’t.', 'The flowers were white. The candles were perfect. The seating chart, however, had clearly survived a small war.\n\nBefore the first course, a place card disappeared. By dessert, three different explanations were circulating, each delivered with the confidence of someone who had invented it personally.\n\nOur favourite? A last-minute trip to Paris. Our least favourite? A printer error. Darling, nobody wears that much silk to argue with a printer.\n\nThere is always another party. There is not always another invitation.\n\nxoxo, Gossip Girl', true],
-    ['style', 'After midnight, wear the pearls.', 'Heirlooms with a little attitude. The city’s oldest accessory is having a very late night.', 'Forget saving the good things for a special occasion. In this city, making it across town in the rain counts.\n\nA strand of pearls over a plain white tee. Tiny earrings with a leather jacket. A clasp worn deliberately at the front. The charm is in letting something polished feel a little undone.\n\nOur advice: borrow from the past, dress for the evening, and keep your own secrets.\n\nxoxo, Gossip Girl', false]
-  ].map((s,i) => ({id:'sample-'+i, category:s[0], title:s[1], preview:s[2], content:s[3], featured:s[4], published:true, date:new Date(Date.UTC(2026,9,3-i,18)).toISOString()}));
-  let state, filter='all', authenticated=false;
-  try { const raw=localStorage.getItem(KEY); state=raw?JSON.parse(raw):{posts:stories,tips:[],password:null}; if(!Array.isArray(state.posts)||!Array.isArray(state.tips)) throw Error('Invalid data'); }
-  catch { state={posts:stories,tips:[],password:null}; notify('Saved data could not be loaded. This session is using sample stories.'); }
-  function notify(message){$('#toast').textContent=message;$('#toast').hidden=false;clearTimeout(notify.timer);notify.timer=setTimeout(()=>$('#toast').hidden=true,5000);}
-  function save(next){try{localStorage.setItem(KEY,JSON.stringify(next));state=next;return true;}catch{notify('Could not save. Allow browser storage or free some space, then retry.');return false;}}
+  const URL = 'https://htrjenmikgelxpxvbqoi.supabase.co';
+  const PUBLIC_KEY = 'sb_publishable_b8ENqHES92hlVM7WYl-cEg_IvOxM3Jy';
+  let state={posts:[],tips:[]}, filter='all', authenticated=false;
+  let session=null, epoch=0, refreshing=null, loading=false, loaded=false;
+  function notify(message){$('#toast').textContent=message;$('#toast').hidden=false;clearTimeout(notify.timer);notify.timer=setTimeout(()=>$('#toast').hidden=true,6500);}
+  async function request(path,{method='GET',body,token,representation=false}={}){
+    const headers={apikey:PUBLIC_KEY};
+    if(token)headers.Authorization='Bearer '+token;
+    if(body!==undefined)headers['Content-Type']='application/json';
+    if(representation)headers.Prefer='return=representation';
+    const response=await fetch(URL+path,{method,headers,body:body===undefined?undefined:JSON.stringify(body),cache:'no-store',signal:AbortSignal.timeout(15000)});
+    if(!response.ok){const err=new Error(response.status===401?'Please log in again.':response.status===403?'Your account does not have editor access.':'Could not connect. Please try again.');err.status=response.status;throw err;}
+    const text=await response.text();return text?JSON.parse(text):null;
+  }
+  async function token(){
+    if(!session)throw Error('Please log in again.');
+    if(session.expires_at>Date.now()+60000)return session.access_token;
+    if(!refreshing){const version=epoch;refreshing=request('/auth/v1/token?grant_type=refresh_token',{method:'POST',body:{refresh_token:session.refresh_token}}).then(data=>{if(version!==epoch)throw Error('Please log in again.');session={...data,expires_at:Date.now()+data.expires_in*1000};return session.access_token;}).finally(()=>refreshing=null);}
+    return refreshing;
+  }
+  async function adminRequest(path,options={}){return request('/rest/v1/'+path,{...options,token:await token()});}
+  async function loadFeed(){
+    if(loading)return;loading=true;
+    try{const posts=await request('/rest/v1/posts?select=*&published=eq.true&order=date.desc');state.posts=posts;loaded=true;render();$('#feed-status').textContent='';$('#retry-feed').hidden=true;
+      const reader=$('#story-dialog');if(reader.open){const updated=posts.find(p=>p.id===reader.dataset.postId);if(!updated)reader.close();}
+    }catch{$('#feed-status').textContent=loaded?'Updates are unavailable. These stories may be out of date.':'Stories are unavailable right now. Please try again shortly.';$('#retry-feed').hidden=false;}
+    finally{loading=false;}
+  }
+  $('#retry-feed').addEventListener('click',loadFeed);
   function element(tag, cls, text){const node=document.createElement(tag);if(cls)node.className=cls;if(text!==undefined)node.textContent=text;return node;}
   const date = value => new Date(value).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}).toUpperCase();
   function metadata(post){const meta=element('div','post-meta');meta.append(element('span','category',post.category.toUpperCase()),element('span','',date(post.date)));return meta;}
   function render(){const list=$('#post-list');list.replaceChildren();const posts=state.posts.filter(p=>p.published&&(filter==='all'||(filter==='featured'?p.featured:p.category===filter)));$('#filter-label').textContent=filter==='style'?'GOOD TASTE. BAD INTENTIONS.':filter==='featured'?'THE STORIES EVERYONE IS TALKING ABOUT.':'THE CITY TALKS. WE LISTEN.';$('#post-count').textContent=String(posts.length).padStart(2,'0')+' STORIES';$('#feed-title').textContent=filter==='style'?'the style edit':filter==='featured'?'à la une':'latest spotted';document.querySelectorAll('[data-filter]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.filter===filter)));posts.forEach((post,i)=>{const card=element('article','post');card.append(metadata(post),element('h3','',post.title),element('p','',post.preview));const button=element('button','read',"Lire l’histoire →");button.addEventListener('click',()=>openStory(post));card.append(button);list.append(card);});if(!posts.length)list.append(element('p','post','The city is keeping quiet. Check back soon.'));}
-  function openStory(post){const body=$('#story-body');body.replaceChildren(metadata(post));const title=element('h2','',post.title);title.id='story-title';body.append(title,element('div','story-content',post.content));$('#story-dialog').showModal();}
+  function openStory(post){$('#story-dialog').dataset.postId=post.id;const body=$('#story-body');body.replaceChildren(metadata(post));const title=element('h2','',post.title);title.id='story-title';body.append(title,element('div','story-content',post.content));$('#story-dialog').showModal();}
   document.querySelectorAll('[data-filter]').forEach(button=>button.addEventListener('click',()=>{filter=button.dataset.filter;render();$('#posts').scrollIntoView({behavior:'smooth'});}));
   document.querySelectorAll('[data-action]').forEach(button=>button.addEventListener('click',()=>{if(button.dataset.action==='tips'){$('#tip-status').textContent='';$('#tip-dialog').showModal();}else{filter='all';render();window.scrollTo({top:0,behavior:'smooth'});}}));
   document.querySelectorAll('dialog').forEach(dialog=>{dialog.querySelector('.close').addEventListener('click',()=>dialog.close());dialog.addEventListener('click',e=>{if(e.target===dialog){const r=dialog.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)dialog.close();}});});
-  $('#tip-form').addEventListener('submit',event=>{event.preventDefault();const content=$('#tip-text').value.trim();if(!content){$('#tip-status').textContent='A secret needs a few words.';return;}const tip={id:crypto.randomUUID(),content,date:new Date().toISOString()};if(save({...state,tips:[tip,...state.tips]})){$('#tip-form').reset();$('#tip-status').textContent='Your tip is saved privately in this browser. It has not been published.';if(authenticated)renderAdmin();}});
-  async function derive(password,salt){const encoder=new TextEncoder();const key=await crypto.subtle.importKey('raw',encoder.encode(password),'PBKDF2',false,['deriveBits']);return Array.from(new Uint8Array(await crypto.subtle.deriveBits({name:'PBKDF2',salt:encoder.encode(salt),iterations:150000,hash:'SHA-256'},key,256)),x=>x.toString(16).padStart(2,'0')).join('');}
-  function showAdmin(){if($('#admin-dialog').open)return;$('#password-label').textContent=state.password?'Editor password':'Create your local editor password (8+ characters)';$('#login-button').textContent=state.password?'Log in →':'Set password →';$('#login-status').textContent='';$('#admin-dialog').showModal();}
+  $('#tip-form').addEventListener('submit',async event=>{
+    event.preventDefault();const content=$('#tip-text').value.trim(),button=event.submitter;
+    if(!content){$('#tip-status').textContent='A secret needs a few words.';return;}
+    button.disabled=true;$('#tip-status').textContent='Sending…';
+    try{await request('/rest/v1/tips',{method:'POST',body:{content}});$('#tip-form').reset();$('#tip-status').textContent='Received. Your tip is in the editor’s private inbox.';if(authenticated)await refreshAdmin();}
+    catch{$('#tip-status').textContent='We couldn’t confirm delivery. Your message is still here; please try again.';}finally{button.disabled=false;}
+  });
+  function showAdmin(){if(!$('#admin-dialog').open){$('#login-status').textContent='';$('#admin-dialog').showModal();}}
   function route(){if(location.hash==='#admin')showAdmin();}window.addEventListener('hashchange',route);
-  $('#admin-dialog').addEventListener('close',()=>{authenticated=false;$('#login-form').reset();$('#login-form').hidden=false;$('#admin-panel').hidden=true;$('#admin-posts').replaceChildren();$('#admin-tips').replaceChildren();if(location.hash==='#admin')history.replaceState(null,'',location.pathname+location.search);});
-  $('#login-form').addEventListener('submit',async event=>{event.preventDefault();const button=$('#login-button');button.disabled=true;try{const password=$('#password').value;const salt=state.password?.salt||crypto.randomUUID();const hash=await derive(password,salt);if(state.password&&state.password.hash!==hash){$('#login-status').textContent='That password doesn’t match.';return;}if(!state.password&&!save({...state,password:{salt,hash}}))return;authenticated=true;$('#login-form').hidden=true;$('#admin-panel').hidden=false;$('#password').value='';renderAdmin();}catch{$('#login-status').textContent='Login is unavailable here. Open through localhost in a modern browser.';}finally{button.disabled=false;}});
-  $('#logout').addEventListener('click',()=>{$('#admin-dialog').close();});
-  $('#post-form').addEventListener('submit',event=>{event.preventDefault();if(!authenticated)return;const title=$('#title').value.trim(),content=$('#content').value.trim();if(!title||!content){$('#admin-status').textContent='Add a title and story first.';return;}const post={id:crypto.randomUUID(),category:$('#category').value,title,content,preview:content.slice(0,170)+(content.length>170?'…':''),featured:$('#featured').checked,published:false,date:new Date().toISOString()};if(save({...state,posts:[post,...state.posts]})){$('#post-form').reset();$('#admin-status').textContent='Draft saved. Publish it below when ready.';renderAdmin();render();}});
-  function action(label,run){const button=element('button','',label);button.type='button';button.addEventListener('click',()=>{if(authenticated)run();});return button;}
-  function renderAdmin(){if(!authenticated)return;const posts=$('#admin-posts'),tips=$('#admin-tips');posts.replaceChildren();tips.replaceChildren();state.posts.forEach(post=>{const row=element('div','admin-row');row.append(element('strong','',post.title),element('small','',post.category+' · '+(post.published?'Published':'Draft')),action(post.published?'Unpublish':'Publish',()=>{if(save({...state,posts:state.posts.map(p=>p.id===post.id?{...p,published:!p.published}:p)})){render();renderAdmin();}}),action('Delete',()=>{if(confirm('Delete this story permanently?')&&save({...state,posts:state.posts.filter(p=>p.id!==post.id)})){render();renderAdmin();}}));posts.append(row);});state.tips.forEach(tip=>{const row=element('div','admin-row');row.append(element('small','',date(tip.date)),element('p','',tip.content),action('Delete tip',()=>{if(confirm('Delete this tip permanently?')&&save({...state,tips:state.tips.filter(t=>t.id!==tip.id)}))renderAdmin();}));tips.append(row);});if(!state.tips.length)tips.append(element('p','fine','No tips yet. The city is keeping its secrets.'));}
-  render();route();
+  function lock(){const old=session;epoch++;session=null;authenticated=false;$('#login-form').reset();$('#login-form').hidden=false;$('#admin-panel').hidden=true;$('#admin-posts').replaceChildren();$('#admin-tips').replaceChildren();state.tips=[];
+    if(old)request('/auth/v1/logout?scope=local',{method:'POST',token:old.access_token}).catch(()=>{});
+  }
+  $('#admin-dialog').addEventListener('close',()=>{lock();if(location.hash==='#admin')history.replaceState(null,'',location.pathname+location.search);});
+  $('#login-form').addEventListener('submit',async event=>{
+    event.preventDefault();const button=$('#login-button'),version=epoch;button.disabled=true;$('#login-status').textContent='Signing in…';
+    try{const data=await request('/auth/v1/token?grant_type=password',{method:'POST',body:{email:$('#email').value.trim(),password:$('#password').value}});
+      if(version!==epoch)return;
+      session={...data,expires_at:Date.now()+data.expires_in*1000};
+      const membership=await adminRequest('editors?select=user_id&user_id=eq.'+encodeURIComponent(data.user.id));
+      if(version!==epoch)return;
+      if(!membership.length)throw Error('This account has not been given editor access.');
+      authenticated=true;$('#login-form').hidden=true;$('#admin-panel').hidden=false;$('#password').value='';await refreshAdmin();
+    }catch(error){if(version===epoch){lock();$('#login-status').textContent=error.status===400?'Email or password not recognised.':error.message;}}finally{button.disabled=false;}
+  });
+  $('#logout').addEventListener('click',()=>$('#admin-dialog').close());
+  $('#post-form').addEventListener('submit',async event=>{
+    event.preventDefault();if(!authenticated)return;const title=$('#title').value.trim(),content=$('#content').value.trim(),button=event.submitter;
+    if(!title||!content){$('#admin-status').textContent='Add a title and story first.';return;}
+    button.disabled=true;
+    try{await adminRequest('posts',{method:'POST',body:{category:$('#category').value,title,content,preview:content.slice(0,170)+(content.length>170?'…':''),featured:$('#featured').checked,published:false},representation:true});$('#post-form').reset();$('#admin-status').textContent='Draft saved online. Publish it below when ready.';await refreshAdmin();}
+    catch(error){$('#admin-status').textContent=error.message;}finally{button.disabled=false;}
+  });
+  async function refreshAdmin(){if(!authenticated)return;const version=epoch;try{const [posts,tips]=await Promise.all([adminRequest('posts?select=*&order=date.desc'),adminRequest('tips?select=*&order=date.desc')]);if(version!==epoch||!authenticated)return;state.tips=tips;renderAdmin(posts,tips);}catch(error){if(version===epoch)notify(error.message);}}
+  function action(label,run){const button=element('button','',label);button.type='button';button.addEventListener('click',async()=>{if(!authenticated)return;button.disabled=true;try{await run();}catch(error){notify(error.message);}finally{button.disabled=false;}});return button;}
+  async function mutate(table,id,method,body){const result=await adminRequest(table+'?id=eq.'+encodeURIComponent(id),{method,body,representation:true});if(!result?.length)throw Error('That item was already removed or your access changed.');await Promise.all([loadFeed(),refreshAdmin()]);}
+  function renderAdmin(posts,tips){
+    const postList=$('#admin-posts'),tipList=$('#admin-tips');postList.replaceChildren();tipList.replaceChildren();
+    posts.forEach(post=>{const row=element('div','admin-row');row.append(element('strong','',post.title),element('small','',post.category+' · '+(post.published?'Published':'Draft')),action(post.published?'Unpublish':'Publish',()=>mutate('posts',post.id,'PATCH',{published:!post.published})),action('Delete',async()=>{if(confirm('Delete this story for everyone?'))await mutate('posts',post.id,'DELETE');}));postList.append(row);});
+    tips.forEach(tip=>{const row=element('div','admin-row');row.append(element('small','',date(tip.date)),element('p','',tip.content),action('Delete tip',async()=>{if(confirm('Delete this tip permanently?'))await mutate('tips',tip.id,'DELETE');}));tipList.append(row);});
+    if(!tips.length)tipList.append(element('p','fine','No tips yet. New submissions will appear here.'));
+    if(!posts.length)postList.append(element('p','fine','No stories yet. Write your first draft above.'));
+  }
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden){loadFeed();if(authenticated)refreshAdmin();}});
+  setInterval(()=>{if(!document.hidden){loadFeed();if(authenticated)refreshAdmin();}},15000);
+  loadFeed();route();
 })();
